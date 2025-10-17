@@ -1,5 +1,38 @@
-<?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="black">#FF000000</color>
-    <color name="white">#FFFFFFFF</color>
+    <!-- Акцент -->
+    <color name="md_theme_light_primary">#D32F2F</color>
+    <color name="md_theme_light_onPrimary">#FFFFFF</color>
+
+    <!-- Фоны и текст -->
+    <color name="md_theme_light_surface">#FFF2F2</color>
+    <color name="md_theme_light_onSurface">#3A2C2C</color>
+    <color name="md_theme_light_surfaceVariant">#F1E1DE</color>
+    <color name="md_theme_light_onSurfaceVariant">#6E5755</color>
+    <color name="md_theme_light_outline">#E3CFCC</color>
+
+    <!-- Ошибки -->
+    <color name="md_theme_light_error">#B3261E</color>
+    <color name="md_theme_light_onError">#FFFFFF</color>
+
+    <color name="md_theme_light_primaryContainer">#FFDAD6</color>
+    <color name="md_theme_light_onPrimaryContainer">#410002</color>
+
+    <!-- Брендовый акцент (тонально ярче в дарке) -->
+    <color name="md_theme_dark_primary">#E15C64</color>
+    <color name="md_theme_dark_onPrimary">#3C0E13</color>
+    <color name="md_theme_dark_primaryContainer">#5A1F26</color>
+    <color name="md_theme_dark_onPrimaryContainer">#FFD8DB</color>
+
+    <!-- Базовые поверхности (тёмные, с багровым оттенком) -->
+    <color name="md_theme_dark_surface">#14090D</color>
+    <color name="md_theme_dark_onSurface">#F3E9EB</color>
+    <color name="md_theme_dark_surfaceVariant">#3A1E22</color>
+    <color name="md_theme_dark_onSurfaceVariant">#E6C9CD</color>
+    <color name="md_theme_dark_outline">#71404A</color>
+
+    <!-- Доп. роли (если понадобятся) -->
+    <color name="md_theme_dark_secondary">#D09AA1</color>
+    <color name="md_theme_dark_onSecondary">#2B0F14</color>
+    <color name="md_theme_dark_error">#F2B8B5</color>
+    <color name="md_theme_dark_onError">#601410</color>
 </resources>

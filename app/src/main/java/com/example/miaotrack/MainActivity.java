@@ -1,19 +1,29 @@
-package com.example.miaotrack; // Убедитесь, что имя пакета ваше
+package com.example.miaotrack;
 
 import android.Manifest;
+import android.annotation.SuppressLint;
 import android.content.BroadcastReceiver;
+import android.content.ContentResolver;
+import android.content.ContentUris;
+import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.database.Cursor;
 import android.graphics.Color;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.provider.MediaStore;
 import android.util.Log;
+import android.view.MotionEvent;
+import android.view.View;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
+import android.widget.Spinner;
 import android.widget.Toast;
 
 import androidx.annotation.NonNull;
@@ -23,15 +33,16 @@ import androidx.core.content.ContextCompat;
 import androidx.localbroadcastmanager.content.LocalBroadcastManager;
 
 import com.github.mikephil.charting.charts.LineChart;
+import com.github.mikephil.charting.components.Legend;
 import com.github.mikephil.charting.components.XAxis;
 import com.github.mikephil.charting.components.YAxis;
 import com.github.mikephil.charting.data.Entry;
 import com.github.mikephil.charting.data.LineData;
 import com.github.mikephil.charting.data.LineDataSet;
+import com.github.mikephil.charting.interfaces.datasets.ILineDataSet;
 import com.google.android.material.button.MaterialButton;
+import com.google.android.material.color.MaterialColors;
 import com.google.android.material.textfield.TextInputEditText;
-import android.widget.Spinner;
-
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -39,11 +50,18 @@ import org.json.JSONException;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
+
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
+import androidx.core.app.NotificationCompat;
+import androidx.core.app.NotificationManagerCompat;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -57,22 +75,40 @@ public class MainActivity extends AppCompatActivity {
     private LineData lineData;
 
     private static final int MAX_CHART_ENTRIES = 300;
+    // ===== Уведомления о глюкозе =====
+    private static final String CHANNEL_ID_GLUCOSE = "glucose_alerts";
+    private static final int REQUEST_CODE_POST_NOTIFICATIONS = 501;
+    private static final int NOTIF_ID_HIGH = 1001;
+    private static final int NOTIF_ID_LOW = 1002;
+    private static final float HIGH_GLUCOSE_THRESHOLD = 11.0f;
+    private static final float LOW_GLUCOSE_THRESHOLD = 5.0f;
+
+    private enum AlertState { NORMAL, HIGH, LOW }
+    private AlertState lastAlertState = AlertState.NORMAL;
+    // ================================
+
     private static final String[] SCREENS = {"Главный экран", "Текущие значения", "История"};
     private static final String TAG_CHART = "MainActivityChart";
     private static final String TAG_FILE_LOG = "MiaoTrackFileLogMA"; // Отдельный тег для логов файла в MainActivity
 
     private static final String PREFS_NAME = "GlucosePrefs";
-    private static final String PREF_KEY_ENTRIES = "entries";
+    private static final String PREFS_KEY_ENTRIES = "GlucoseEntries";
+    private static final String PREFS_KEY_FORECAST = "ForecastEntries";
 
-    // Имя файла истории, должно совпадать с current_data.java и history_measure.java
-    public static final String HISTORY_FILENAME = "measure_history.txt";
-    private static final int REQUEST_CODE_WRITE_EXTERNAL_STORAGE = 102; // Код для запроса разрешения
+    // Время → ось X
+    private static final long MINUTE_MS = 60_000L;
+    private static final String PREFS_KEY_BASETIME = "BaseTimeMs";
+    private long baseTimeMs = -1L;   // точка отсчёта времени (эпоха), чтобы X были «минуты с начала»
 
+    private static final float WINDOW_MINUTES = 3f;
 
+    private static final int REQUEST_CODE_WRITE_EXTERNAL_STORAGE = 100;
+
+    // Получение обновлений глюкозы из сервиса/датчика через LocalBroadcast
     private final BroadcastReceiver glucoseUpdateReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
-            if (current_data.ACTION_GLUCOSE_UPDATE.equals(intent.getAction())) {
+            if (intent != null && current_data.ACTION_GLUCOSE_UPDATE.equals(intent.getAction())) {
                 float glucoseValue = intent.getFloatExtra(current_data.EXTRA_GLUCOSE_VALUE, -1f);
                 if (glucoseValue != -1f) {
                     Log.d(TAG_CHART, "MainActivity: Получено обновление глюкозы с датчика: " + glucoseValue);
@@ -84,36 +120,47 @@ public class MainActivity extends AppCompatActivity {
         }
     };
 
-
+    @SuppressLint("ClickableViewAccessibility")
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
+        // Уведомления
+        requestNotificationPermissionIfNeeded();
+        ensureNotificationChannel();
+
         spinner = findViewById(R.id.spinner);
         etValue = findViewById(R.id.etGlucoseInput);
         btnAdd = findViewById(R.id.btnSaveManual);
         chart = findViewById(R.id.lineChart);
-
+        chart.setOnTouchListener(new View.OnTouchListener() {
+            @Override public boolean onTouch (View v, MotionEvent event){
+                v.getParent().requestDisallowInterceptTouchEvent(true);
+                return false;
+            }
+        });
         glucoseEntries = new ArrayList<>();
 
         ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, SCREENS);
         adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         spinner.setAdapter(adapter);
+        spinner.setSelection(0);
         spinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override
-            public void onItemSelected(AdapterView<?> parent, android.view.View view, int position, long id) {
-                if (parent.getTag() != null && (Integer)parent.getTag() == position) {
-                    return;
+            public void onItemSelected(AdapterView<?> adapterView, android.view.View view, int i, long l) {
+                if (spinner.getTag() != null && spinner.getTag() instanceof Integer) {
+                    int previousPosition = (Integer) spinner.getTag();
+                    if (i == previousPosition) return;
                 }
-                parent.setTag(position);
+                spinner.setTag(i);
                 Class<?> activityClass = null;
-                switch (position) {
-                    case 0: break; // Текущий экран
+                switch (i) {
+                    case 0: activityClass = MainActivity.class; break;
                     case 1: activityClass = com.example.miaotrack.current_data.class; break;
                     case 2: activityClass = com.example.miaotrack.history_measure.class; break;
                 }
-                if (activityClass != null) {
+                if (activityClass != null && activityClass != MainActivity.class) {
                     startActivity(new Intent(MainActivity.this, activityClass));
                 }
             }
@@ -135,17 +182,16 @@ public class MainActivity extends AppCompatActivity {
                 float value = Float.parseFloat(valueString.replace(',', '.'));
                 addGlucoseEntry(value, true); // true, так как это ручной ввод
                 etValue.setText("");
-                Toast.makeText(MainActivity.this, "Значение " + String.format(Locale.US, "%.1f", value) + " добавлено", Toast.LENGTH_SHORT).show();
+                Toast.makeText(MainActivity.this, String.format(Locale.getDefault(), "Значение %.1f добавлено", value), Toast.LENGTH_SHORT).show();
             } catch (NumberFormatException e) {
-                Toast.makeText(this, "Неверный формат числа", Toast.LENGTH_SHORT).show();
+                Toast.makeText(MainActivity.this, "Некорректное число", Toast.LENGTH_SHORT).show();
             }
         });
 
-        loadEntries();
         setupChart();
-        calculateAndSetForecast();
-        refreshChartData();
+        restoreEntries();
 
+        // Регистрируем приёмник обновлений
         LocalBroadcastManager.getInstance(this).registerReceiver(
                 glucoseUpdateReceiver,
                 new IntentFilter(current_data.ACTION_GLUCOSE_UPDATE)
@@ -167,126 +213,401 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void setupChart() {
+        final java.text.SimpleDateFormat hhmm =
+                new java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault());
+
+        // Наборы данных
         glucoseDataSet = new LineDataSet(glucoseEntries, "Глюкоза");
         glucoseDataSet.setDrawValues(false);
         glucoseDataSet.setLineWidth(2f);
         glucoseDataSet.setCubicIntensity(0.2f);
-        glucoseDataSet.setColor(Color.parseColor("#DC3D3d")); // Синий
-        glucoseDataSet.setCircleColor(Color.parseColor("#DC3D3D"));
-        glucoseDataSet.setCircleRadius(3f);
-        glucoseDataSet.setMode(LineDataSet.Mode.CUBIC_BEZIER);
+        glucoseDataSet.setDrawCircles(false);
+        glucoseDataSet.setColor(Color.parseColor("#03A9F4"));
 
         forecastDataSet = new LineDataSet(new ArrayList<>(), "Прогноз");
-        forecastDataSet.setDrawValues(true);
-        forecastDataSet.setValueTextColor(Color.GRAY);
-        forecastDataSet.setValueTextSize(10f);
+        forecastDataSet.setDrawValues(false);
         forecastDataSet.setLineWidth(2f);
-        forecastDataSet.setColor(Color.GRAY);
-        forecastDataSet.setCircleColor(Color.GRAY);
-        forecastDataSet.setCircleRadius(5f);
-        forecastDataSet.setDrawCircleHole(false);
+        forecastDataSet.setCubicIntensity(0.2f);
+        forecastDataSet.setDrawCircles(false);
+        forecastDataSet.setColor(Color.parseColor("#FF9800"));
+        forecastDataSet.enableDashedLine(10f, 10f, 0);
 
         lineData = new LineData(glucoseDataSet, forecastDataSet);
         chart.setData(lineData);
 
+        // Жесты и физика графика
+        chart.setTouchEnabled(true);
+        chart.setDragEnabled(true);
+        chart.setScaleXEnabled(true);
+        chart.setScaleYEnabled(true);
+        chart.setPinchZoom(true);
+        chart.setDragDecelerationFrictionCoef(0.9f);
+
+        // ВАЖНО: пусть оси сами подстраиваются под данные
+        chart.setAutoScaleMinMaxEnabled(true);
+
+        // Окно видимых значений по X: минимум — чтобы было что «тащить»,
+        // максимум — чтобы не показывать сразу «всю историю»
+        chart.setVisibleXRangeMinimum(WINDOW_MINUTES); // у тебя это 3f
+        chart.setVisibleXRangeMaximum(50f);
+        //new
+        int onSurface = MaterialColors.getColor(chart, com.google.android.material.R.attr.colorOnSurface);
+        int grid      = MaterialColors.getColor(chart, com.google.android.material.R.attr.colorSurfaceVariant);
+        int primary   = MaterialColors.getColor(chart, com.google.android.material.R.attr.colorPrimary);
+
+        // Ось X как время
         XAxis xAxis = chart.getXAxis();
         xAxis.setPosition(XAxis.XAxisPosition.BOTTOM);
-        xAxis.setGranularity(1f);
         xAxis.setDrawGridLines(false);
-        xAxis.setTextColor(Color.DKGRAY);
-        xAxis.setAxisLineColor(Color.DKGRAY);
-
-        YAxis leftAxis = chart.getAxisLeft();
-        leftAxis.setDrawGridLines(true);
-        leftAxis.setGridColor(Color.LTGRAY);
-        leftAxis.setTextColor(Color.DKGRAY);
-        leftAxis.setAxisLineColor(Color.DKGRAY);
-        leftAxis.setAxisMinimum(0f);
-
-        chart.getAxisRight().setEnabled(false);
-        chart.getDescription().setEnabled(false);
-        chart.getLegend().setEnabled(true);
-        chart.getLegend().setTextColor(Color.DKGRAY);
-        chart.setTouchEnabled(true);
-        chart.setPinchZoom(true);
-        chart.setScaleYEnabled(true);
-        chart.setDrawGridBackground(false);
-    }
-
-    private void addGlucoseEntry(float actualGlucoseValue, boolean isManualEntry) {
-        if (forecastDataSet != null) {
-            forecastDataSet.clear(); // Очищаем старый прогноз
-        }
-
-        glucoseEntries.add(new Entry(glucoseEntries.size(), actualGlucoseValue));
-
-        while (glucoseEntries.size() > MAX_CHART_ENTRIES) {
-            if (!glucoseEntries.isEmpty()) {
-                glucoseEntries.remove(0);
-            } else {
-                break;
+        xAxis.setGranularity(1f);
+        xAxis.setGranularityEnabled(true);
+        xAxis.setAvoidFirstLastClipping(true);
+        xAxis.setLabelRotationAngle(-45f);
+        xAxis.setValueFormatter(new com.github.mikephil.charting.formatter.ValueFormatter() {
+            @Override
+            public String getFormattedValue(float value) {
+                long millis = baseTimeMs + (long) (value * MINUTE_MS);
+                return hhmm.format(new java.util.Date(millis));
+            }
+        });
+        //new
+        YAxis left = chart.getAxisLeft();
+        left.setTextColor(onSurface);
+        left.setGridColor(grid);
+        left.setAxisLineColor(grid);
+        //new
+        chart.getLegend().setTextColor(onSurface);
+        chart.getDescription().setTextColor(onSurface);
+        //new
+        for (ILineDataSet s : chart.getData().getDataSets()) {
+            if (s instanceof LineDataSet) {
+                LineDataSet ds = (LineDataSet) s;
+                ds.setColor(primary);
+                ds.setCircleColor(primary);
+                ds.setValueTextColor(onSurface);
             }
         }
-        // Переиндексируем X координаты
-        for (int i = 0; i < glucoseEntries.size(); i++) {
-            glucoseEntries.get(i).setX(i);
+    }
+
+
+
+    private void refreshChartData() {
+        if (chart == null) return;
+
+        LineData ld = chart.getData();
+        if (ld == null) {
+            if (glucoseEntries == null) glucoseEntries = new ArrayList<>();
+            setupChart();
+            calculateAndSetForecast();
+            ld = chart.getData();
         }
 
-        calculateAndSetForecast();
-        refreshChartData();
-        saveEntries(); // Сохранение в SharedPreferences для графика
+        glucoseDataSet.notifyDataSetChanged();
+        forecastDataSet.notifyDataSetChanged();
+        ld.notifyDataChanged();
+        chart.notifyDataSetChanged();
 
-        // Если это ручной ввод, записываем в файл истории
+        // Размер окна по X
+        chart.setVisibleXRangeMinimum(WINDOW_MINUTES); // напр., 3f
+        chart.setVisibleXRangeMaximum(50f);
+
+        // Прокрутка к максимальному X между фактами и прогнозом
+        float lastX = 0f;
+        if (!glucoseEntries.isEmpty()) {
+            lastX = glucoseEntries.get(glucoseEntries.size() - 1).getX();
+        }
+        if (forecastDataSet != null && forecastDataSet.getEntryCount() > 0) {
+            float fLast = forecastDataSet.getEntryForIndex(forecastDataSet.getEntryCount() - 1).getX();
+            lastX = Math.max(lastX, fLast);
+        }
+        chart.moveViewToX(lastX);
+
+        chart.invalidate();
+    }
+
+
+    /**
+     * Сохранение/восстановление точек графика
+     */
+    private void saveEntries() {
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        SharedPreferences.Editor editor = prefs.edit();
+        try {
+            JSONArray arr = new JSONArray();
+            for (Entry e : glucoseEntries) {
+                JSONArray pair = new JSONArray();
+                pair.put(e.getX());
+                pair.put(e.getY());
+                arr.put(pair);
+            }
+            editor.putString(PREFS_KEY_ENTRIES, arr.toString());
+            editor.putLong(PREFS_KEY_BASETIME, baseTimeMs);
+            JSONArray forecastArr = new JSONArray();
+            for (int i = 0; i < forecastDataSet.getEntryCount(); i++) {
+                Entry e = forecastDataSet.getEntryForIndex(i);
+                JSONArray pair = new JSONArray();
+                pair.put(e.getX());
+                pair.put(e.getY());
+                forecastArr.put(pair);
+            }
+            editor.putString(PREFS_KEY_FORECAST, forecastArr.toString());
+        } catch (Exception ex) {
+            Log.e(TAG_CHART, "Ошибка сериализации точек: " + ex.getMessage());
+        }
+        editor.apply();
+    }
+
+    private void restoreEntries() {
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        baseTimeMs = prefs.getLong(PREFS_KEY_BASETIME, -1L);
+        String json = prefs.getString(PREFS_KEY_ENTRIES, null);
+        glucoseEntries.clear();
+        if (json != null) {
+            try {
+                JSONArray arr = new JSONArray(json);
+                for (int i = 0; i < arr.length(); i++) {
+                    JSONArray pair = arr.getJSONArray(i);
+                    float x = (float) pair.getDouble(0);
+                    float y = (float) pair.getDouble(1);
+                    glucoseEntries.add(new Entry(x, y));
+                }
+            } catch (JSONException e) {
+                Log.e(TAG_CHART, "Ошибка парсинга точек: " + e.getMessage());
+            }
+        }
+
+        String forecastJson = prefs.getString(PREFS_KEY_FORECAST, null);
+        if (forecastJson != null) {
+            try {
+                JSONArray arr = new JSONArray(forecastJson);
+                List<Entry> forecastEntries = new ArrayList<>();
+                for (int i = 0; i < arr.length(); i++) {
+                    JSONArray pair = arr.getJSONArray(i);
+                    float x = (float) pair.getDouble(0);
+                    float y = (float) pair.getDouble(1);
+                    forecastEntries.add(new Entry(x, y));
+                }
+                forecastDataSet = new LineDataSet(forecastEntries, "Прогноз");
+            } catch (JSONException e) {
+                Log.e(TAG_CHART, "Ошибка парсинга прогноза: " + e.getMessage());
+                forecastDataSet = new LineDataSet(new ArrayList<>(), "Прогноз");
+            }
+        } else {
+            forecastDataSet = new LineDataSet(new ArrayList<>(), "Прогноз");
+        }
+
+        if (glucoseDataSet == null) {
+            glucoseDataSet = new LineDataSet(glucoseEntries, "Глюкоза");
+        } else {
+            glucoseDataSet.setValues(glucoseEntries);
+        }
+
+        if (lineData == null) {
+            lineData = new LineData(glucoseDataSet, forecastDataSet);
+        } else {
+            lineData.removeDataSet(forecastDataSet);
+            lineData.addDataSet(forecastDataSet);
+        }
+
+        if (baseTimeMs <= 0 && !glucoseEntries.isEmpty()){
+            float lastX = glucoseEntries.get(glucoseEntries.size() - 1).getX();
+            long now = System.currentTimeMillis();
+            baseTimeMs = now - (long)(lastX * MINUTE_MS);
+        }
+
+        chart.setData(lineData);
+        chart.invalidate();
+    }
+
+    /** Создаёт канал уведомлений для Android 7.0+ */
+    private void ensureNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationManager nm = getSystemService(NotificationManager.class);
+            if (nm != null) {
+                NotificationChannel channel = new NotificationChannel(
+                        CHANNEL_ID_GLUCOSE,
+                        "Предупреждения о глюкозе",
+                        NotificationManager.IMPORTANCE_HIGH
+                );
+                channel.setDescription("Уведомления о высоком и низком уровне сахара в крови");
+                channel.enableVibration(true);
+                nm.createNotificationChannel(channel);
+            }
+        }
+    }
+
+    /** Есть ли у приложения разрешение на отправку уведомлений (Android 13+)? */
+    private boolean hasNotificationPermission() {
+        if (Build.VERSION.SDK_INT < 33) return true;
+        return ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+                == PackageManager.PERMISSION_GRANTED;
+    }
+
+    /** Запросить разрешение на уведомления при необходимости (Android 13+) */
+    private void requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT >= 33) {
+            if (!hasNotificationPermission()) {
+                ActivityCompat.requestPermissions(
+                        this,
+                        new String[]{Manifest.permission.POST_NOTIFICATIONS},
+                        REQUEST_CODE_POST_NOTIFICATIONS
+                );
+            }
+        }
+    }
+
+    /** Отправить уведомление */
+    private void sendGlucoseNotification(String title, String text, int notificationId) {
+        ensureNotificationChannel();
+        Intent intent = new Intent(this, MainActivity.class);
+        intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+        int flags = (Build.VERSION.SDK_INT >= 31)
+                ? PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+                : PendingIntent.FLAG_UPDATE_CURRENT;
+        PendingIntent pi = PendingIntent.getActivity(this, 0, intent, flags);
+
+        NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_ID_GLUCOSE)
+                .setSmallIcon(android.R.drawable.ic_dialog_alert)
+                .setContentTitle(title)
+                .setContentText(text)
+                .setStyle(new NotificationCompat.BigTextStyle().bigText(text))
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setAutoCancel(true)
+                .setContentIntent(pi);
+
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            // TODO: Consider calling
+            //    ActivityCompat#requestPermissions
+            // here to request the missing permissions, and then overriding
+            //   public void onRequestPermissionsResult(int requestCode, String[] permissions,
+            //                                          int[] grantResults)
+            // to handle the case where the user grants the permission. See the documentation
+            // for ActivityCompat#requestPermissions for more details.
+            return;
+        }
+        NotificationManagerCompat.from(this).notify(notificationId, builder.build());
+    }
+
+    /** Проверяем значение и, если вышло за пределы, показываем уведомление (с анти-спам логикой по состояниям) */
+    private void maybeNotifyForGlucose(float value) {
+        AlertState newState;
+        if (value > HIGH_GLUCOSE_THRESHOLD) {
+            newState = AlertState.HIGH;
+        } else if (value < LOW_GLUCOSE_THRESHOLD) {
+            newState = AlertState.LOW;
+        } else {
+            newState = AlertState.NORMAL;
+        }
+
+        if (newState != lastAlertState) {
+            if (newState == AlertState.HIGH) {
+                String text = String.format(Locale.getDefault(),
+                        "Текущее значение: %.1f ммоль/л. Порог > %.1f. Проверьте коррекцию.",
+                        value, HIGH_GLUCOSE_THRESHOLD);
+                sendGlucoseNotification("Высокий сахар", text, NOTIF_ID_HIGH);
+            } else if (newState == AlertState.LOW) {
+                String text = String.format(Locale.getDefault(),
+                        "Текущее значение: %.1f ммоль/л. Порог < %.1f. Примите меры для повышения.",
+                        value, LOW_GLUCOSE_THRESHOLD);
+                sendGlucoseNotification("Низкий сахар", text, NOTIF_ID_LOW);
+            }
+            lastAlertState = newState;
+        }
+    }
+
+    void addGlucoseEntry(float actualGlucoseValue, boolean isManualEntry) {
+        // База времени: первый момент, от которого считаем минуты на оси X
+        if (baseTimeMs <= 0L) {
+            baseTimeMs = System.currentTimeMillis();
+        }
+
+        long now = System.currentTimeMillis();
+        float xMinutes = (now - baseTimeMs) / (float) MINUTE_MS;
+
+        // Запомним, был ли пользователь «у правого края», чтобы не ломать ему положение,
+        // если он смотрит историю.
+        boolean wasAtEnd = isAtRightEDGE();
+
+        // Чистим старый прогноз — он пересчитается ниже
+        if (forecastDataSet != null) {
+            forecastDataSet.clear();
+        }
+
+        // КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: добавляем точку c X = минуты, а не индекс!
+        glucoseEntries.add(new Entry(xMinutes, actualGlucoseValue));
+
+        // Проверяем пороги и, при необходимости, уведомляем
+        maybeNotifyForGlucose(actualGlucoseValue);
+
+        // Пересчитываем прогноз и обновляем график
+        calculateAndSetForecast();
+        if (lineData != null) {
+            glucoseDataSet.notifyDataSetChanged();
+            forecastDataSet.notifyDataSetChanged();
+            lineData.notifyDataChanged();
+            chart.notifyDataSetChanged();
+        }
+
+        // Если пользователь был у правого края — прокручиваемся к последней точке
+        if (wasAtEnd && !glucoseEntries.isEmpty()) {
+            float lastX = glucoseEntries.get(glucoseEntries.size() - 1).getX();
+            chart.moveViewToX(lastX);
+        }
+
+        chart.invalidate();
+        saveEntries(); // сохраняем точки/эпоху в SharedPreferences
+
+        // Ручной ввод также пишем в файл истории
         if (isManualEntry) {
             appendDataToHistoryFile(actualGlucoseValue, this);
         }
     }
 
+
+    private boolean isAtRightEDGE(){
+        if (glucoseEntries.isEmpty()) return true;
+        float lastX = glucoseEntries.get(glucoseEntries.size()-1).getX();
+        float right = chart.getHighestVisibleX();
+
+        return right >= lastX - 1f;
+    }
     private void calculateAndSetForecast() {
-        if (forecastDataSet == null || glucoseEntries == null) return;
-        forecastDataSet.clear();
+        if (glucoseEntries == null || glucoseEntries.size() < 2) {
+            if (forecastDataSet != null) forecastDataSet.clear();
+            refreshChartData();
+            return;
+        }
 
         int dataSize = glucoseEntries.size();
+        if (forecastDataSet == null) {
+            forecastDataSet = new LineDataSet(new ArrayList<>(), "Прогноз");
+        } else {
+            forecastDataSet.clear();
+        }
 
-        if (dataSize >= 3) {
-            calculateThreePointForecast(dataSize);
-        } else if (dataSize == 2) {
+        if (dataSize >= 2) {
             calculateTwoPointForecast(dataSize);
+        } else {
+            calculateSinglePointForecast(dataSize);
         }
-    }
 
-    private void calculateThreePointForecast(int dataSize) {
-        try {
-            float y_n = glucoseEntries.get(dataSize - 1).getY();
-            float y_n_minus_1 = glucoseEntries.get(dataSize - 2).getY();
-            float y_n_minus_2 = glucoseEntries.get(dataSize - 3).getY();
-
-            float slope1 = y_n - y_n_minus_1;
-            float slope2 = y_n_minus_1 - y_n_minus_2;
-
-            float averageSlope = (slope1 + slope2) / 2.0f;
-
-            float predictedY = y_n + averageSlope;
-            predictedY = Math.max(0f, predictedY);
-
-            float predictedX = dataSize;
-            forecastDataSet.addEntry(new Entry(predictedX, predictedY));
-            Log.d(TAG_CHART, "Прогноз (3 точки, средний наклон): X=" + predictedX + ", Y=" + predictedY);
-        } catch (IndexOutOfBoundsException e) {
-            Log.e(TAG_CHART, "Ошибка индекса при прогнозе по 3 точкам: " + e.getMessage());
-            if (dataSize >=2) calculateTwoPointForecast(dataSize);
-        }
+        refreshChartData();
+        saveEntries();
     }
 
     private void calculateTwoPointForecast(int dataSize) {
         try {
-            float lastActualY = glucoseEntries.get(dataSize - 1).getY();
-            float prevActualY = glucoseEntries.get(dataSize - 2).getY();
+            float lastY = glucoseEntries.get(dataSize - 1).getY();
+            float prevY = glucoseEntries.get(dataSize - 2).getY();
+            float lastX = glucoseEntries.get(dataSize - 1).getX();
+            float prevX = glucoseEntries.get(dataSize - 2).getX(); // <-- фикс: раньше брался (dataSize - 1)
 
-            float predictedY = lastActualY + (lastActualY - prevActualY);
-            predictedY = Math.max(0f, predictedY);
+            float dx = Math.max(1e-3f, lastX - prevX);
+            float slope = (lastY - prevY) / dx;
 
-            float predictedX = dataSize;
+            float predictedX = lastX + 1f; // «шаг вперёд» на 1 единицу X (1 минута)
+            float predictedY = Math.max(0f, lastY + slope * (predictedX - lastX));
+
             forecastDataSet.addEntry(new Entry(predictedX, predictedY));
             Log.d(TAG_CHART, "Прогноз (2 точки): X=" + predictedX + ", Y=" + predictedY);
         } catch (IndexOutOfBoundsException e) {
@@ -295,147 +616,112 @@ public class MainActivity extends AppCompatActivity {
     }
 
 
-    private void refreshChartData() {
-        if (chart == null) return;
-
-        if (glucoseDataSet == null || forecastDataSet == null || lineData == null) {
-            if (glucoseEntries == null) glucoseEntries = new ArrayList<>();
-            setupChart();
-            calculateAndSetForecast();
+    private void calculateSinglePointForecast(int dataSize) {
+        try {
+            Entry last = glucoseEntries.get(dataSize - 1);
+            float predictedY = Math.max(0f,  last.getY());
+            float predictedX = last.getX() + 1f;
+            forecastDataSet.addEntry(new Entry(predictedX, predictedY));
+            Log.d(TAG_CHART, "Прогноз (1 точка): X=" + predictedX + ", Y=" + predictedY);
+        } catch (IndexOutOfBoundsException e) {
+            Log.e(TAG_CHART, "Ошибка индекса при прогнозе по 1 точке: " + e.getMessage());
         }
+    }
 
-        glucoseDataSet.notifyDataSetChanged();
-        forecastDataSet.notifyDataSetChanged();
-        lineData.notifyDataChanged();
-        chart.notifyDataSetChanged();
 
-        float minXRange;
-        float maxXRange;
-        int dataSize = glucoseEntries.size();
+    private void appendDataToHistoryFile(float value, Context ctx) {
+        String ts = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(new Date());
+        String line = ts + " " + String.format(Locale.getDefault(), "%.1f", value) + "\n";
 
-        if (dataSize > 0 || forecastDataSet.getEntryCount() > 0) {
-            float currentMaxXOnChart = dataSize > 0 ? glucoseEntries.get(dataSize - 1).getX() : 0;
-            if (forecastDataSet.getEntryCount() > 0) {
-                Entry forecastEntry = forecastDataSet.getEntryForIndex(0);
-                if (dataSize == 0 || forecastEntry.getX() > currentMaxXOnChart) {
-                    currentMaxXOnChart = forecastEntry.getX();
-                }
-            }
-            int visiblePointsCount = 20;
-            maxXRange = currentMaxXOnChart + 1.5f;
-            minXRange = Math.max(0f, maxXRange - visiblePointsCount - 1.5f);
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+// Android 10+ — через MediaStore в Download/glucose_history.txt
+            appendViaMediaStore(ctx, line);
         } else {
-            minXRange = 0f;
-            maxXRange = 10f;
-        }
-
-        chart.getXAxis().setAxisMinimum(minXRange);
-        chart.getXAxis().setAxisMaximum(maxXRange);
-
-        if (!glucoseEntries.isEmpty() || forecastDataSet.getEntryCount() > 0) {
-            float yMin = Float.MAX_VALUE;
-            float yMax = Float.MIN_VALUE;
-
-            for (Entry entry : glucoseEntries) {
-                if (entry.getY() < yMin) yMin = entry.getY();
-                if (entry.getY() > yMax) yMax = entry.getY();
-            }
-            if (forecastDataSet.getEntryCount() > 0) {
-                Entry forecastEntry = forecastDataSet.getEntryForIndex(0);
-                if (forecastEntry.getY() < yMin) yMin = forecastEntry.getY();
-                if (forecastEntry.getY() > yMax) yMax = forecastEntry.getY();
-            }
-            if (yMin == Float.MAX_VALUE) {
-                yMin = 0f;
-                yMax = 20f;
-            }
-            chart.getAxisLeft().setAxisMinimum(Math.max(0f, yMin - 1f));
-            chart.getAxisLeft().setAxisMaximum(yMax + 1f);
-        } else {
-            chart.getAxisLeft().setAxisMinimum(0f);
-            chart.getAxisLeft().setAxisMaximum(20f);
-        }
-        chart.invalidate();
-    }
-
-    private void saveEntries() {
-        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-        SharedPreferences.Editor editor = prefs.edit();
-        JSONArray jsonArray = new JSONArray();
-        for (Entry e : glucoseEntries) {
-            JSONArray pair = new JSONArray();
-            try {
-                pair.put(e.getX());
-                pair.put(e.getY());
-            } catch (JSONException ex) {
-                Log.e(TAG_CHART, "Ошибка при сохранении точки в JSON: " + ex.getMessage());
-                continue;
-            }
-            jsonArray.put(pair);
-        }
-        editor.putString(PREF_KEY_ENTRIES, jsonArray.toString());
-        editor.apply();
-    }
-
-    private void loadEntries() {
-        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-        String json = prefs.getString(PREF_KEY_ENTRIES, null);
-        glucoseEntries.clear();
-        if (json != null) {
-            try {
-                JSONArray jsonArray = new JSONArray(json);
-                for (int i = 0; i < jsonArray.length(); i++) {
-                    JSONArray pair = jsonArray.getJSONArray(i);
-                    glucoseEntries.add(new Entry((float) pair.getDouble(0), (float) pair.getDouble(1)));
-                }
-                for (int i = 0; i < glucoseEntries.size(); i++) {
-                    glucoseEntries.get(i).setX(i);
-                }
-            } catch (JSONException e) {
-                Log.e(TAG_CHART, "Ошибка при загрузке точек из JSON: " + e.getMessage());
-                glucoseEntries.clear();
-            }
-        }
-    }
-
-    // Метод для записи данных в файл истории (адаптировано из current_data.java)
-    private void appendDataToHistoryFile(float glucoseValue, Context context) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
-                ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
-            Log.w(TAG_FILE_LOG, "Нет разрешения на запись для сохранения истории. Запросите разрешение.");
-            // Запрос разрешения должен быть сделан до попытки записи, например, в checkAndRequestStoragePermission()
-            // Toast.makeText(context, "Нет разрешения на запись.", Toast.LENGTH_SHORT).show(); // Можно показать Toast
-            return;
-        }
-
-        String state = Environment.getExternalStorageState();
-        if (!Environment.MEDIA_MOUNTED.equals(state)) {
-            Log.e(TAG_FILE_LOG, "Внешнее хранилище недоступно: " + state);
-            Toast.makeText(context, "Внешнее хранилище недоступно.", Toast.LENGTH_SHORT).show();
-            return;
-        }
-
-        SimpleDateFormat sdf = new SimpleDateFormat("dd-MM-yyyy HH-mm-ss", Locale.getDefault());
-        String timestamp = sdf.format(new Date());
-        String logEntry = timestamp + " " + String.format(Locale.US, "%.1f", glucoseValue) + "\n";
-
-        File downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-        if (!downloadsDir.exists()) {
-            if (!downloadsDir.mkdirs()) {
-                Log.e(TAG_FILE_LOG, "Не удалось создать директорию Download.");
-                Toast.makeText(context, "Не удалось создать директорию Download.", Toast.LENGTH_SHORT).show();
+// Android 9 и ниже — в публичную папку Download (нужно WRITE_EXTERNAL_STORAGE)
+            File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+            if (dir == null) {
+                Log.e(TAG_FILE_LOG, "Папка Download недоступна");
+                Toast.makeText(ctx, "Папка Download недоступна", Toast.LENGTH_LONG).show();
                 return;
             }
+            if (!dir.exists() && !dir.mkdirs()) {
+                Log.e(TAG_FILE_LOG, "Не удалось создать папку Download: " + dir.getAbsolutePath());
+                Toast.makeText(ctx, "Не удалось создать папку Download", Toast.LENGTH_LONG).show();
+                return;
+            }
+            File file = new File(dir, "measure_history.txt");
+            try (FileOutputStream fos = new FileOutputStream(file, true)) {
+                fos.write(line.getBytes());
+                Log.d(TAG_FILE_LOG, "(LEGACY) В Download записано: " + line.trim());
+            } catch (IOException e) {
+                Log.e(TAG_FILE_LOG, "(LEGACY) Ошибка записи в Download: " + e.getMessage());
+                Toast.makeText(ctx, "Ошибка записи: " + e.getMessage(), Toast.LENGTH_LONG).show();
+            }
         }
+    }
 
-        File historyFile = new File(downloadsDir, HISTORY_FILENAME);
-        try (FileOutputStream fos = new FileOutputStream(historyFile, true)) {
-            fos.write(logEntry.getBytes());
-            Log.d(TAG_FILE_LOG, "Ручная запись добавлена в " + historyFile.getAbsolutePath() + ": " + logEntry.trim());
-            Toast.makeText(context, "Запись сохранена в историю.", Toast.LENGTH_SHORT).show();
-        } catch (IOException e) {
-            Log.e(TAG_FILE_LOG, "Ошибка записи в файл " + historyFile.getAbsolutePath(), e);
-            Toast.makeText(context, "Ошибка сохранения истории в файл.", Toast.LENGTH_SHORT).show();
+    private void appendViaMediaStore(Context ctx, String line) {
+        try {
+            ContentResolver resolver = ctx.getContentResolver();
+            Uri collection = null;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
+            }
+
+
+            final String relativePath = Environment.DIRECTORY_DOWNLOADS + "/"; // "Download/"
+            final String displayName = "measure_history.txt";
+
+
+// Пытаемся найти файл Download/glucose_history.txt
+            String[] projection = new String[]{
+                    MediaStore.MediaColumns._ID,
+                    MediaStore.MediaColumns.DISPLAY_NAME,
+                    MediaStore.MediaColumns.RELATIVE_PATH
+            };
+            String selection = MediaStore.MediaColumns.RELATIVE_PATH + "=? AND " + MediaStore.MediaColumns.DISPLAY_NAME + "=?";
+            String[] selectionArgs = new String[]{relativePath, displayName};
+
+
+            Uri fileUri = null;
+            try (Cursor c = resolver.query(collection, projection, selection, selectionArgs, null)) {
+                if (c != null && c.moveToFirst()) {
+                    long id = c.getLong(0);
+                    fileUri = ContentUris.withAppendedId(collection, id);
+                }
+            }
+
+
+            if (fileUri == null) {
+// Не нашли — создаём в Download/
+                ContentValues values = new ContentValues();
+                values.put(MediaStore.MediaColumns.DISPLAY_NAME, displayName);
+                values.put(MediaStore.MediaColumns.MIME_TYPE, "text/plain");
+                values.put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath);
+                fileUri = resolver.insert(collection, values);
+                if (fileUri == null) throw new IOException("resolver.insert вернул null");
+            }
+
+
+// Открываем на дозапись ('wa'), при отсутствии — перезаписываем ('w')
+            OutputStream os = null;
+            try {
+                os = resolver.openOutputStream(fileUri, "wa");
+            } catch (Exception appendModeNotSupported) {
+                Log.w(TAG_FILE_LOG, "'wa' недоступен, используем 'w' (перезапись)");
+                os = resolver.openOutputStream(fileUri, "w");
+            }
+            if (os == null) throw new IOException("openOutputStream вернул null");
+            os.write(line.getBytes());
+            os.flush();
+            os.close();
+
+
+            Log.d(TAG_FILE_LOG, "(MediaStore) В Download записано: " + line.trim());
+        } catch (Exception e) {
+            Log.e(TAG_FILE_LOG, "(MediaStore) Ошибка записи в Download: " + e.getMessage());
+            Toast.makeText(ctx, "Ошибка записи в Download: " + e.getMessage(), Toast.LENGTH_LONG).show();
         }
     }
 
@@ -454,12 +740,9 @@ public class MainActivity extends AppCompatActivity {
                 Log.d(TAG_FILE_LOG, "Разрешение WRITE_EXTERNAL_STORAGE уже есть.");
             }
         } else {
-            Log.d(TAG_FILE_LOG, "API >= Q, WRITE_EXTERNAL_STORAGE не требуется для доступа к Downloads через MediaStore (но мы используем прямой доступ, так что проверка не помешает, но для Downloads обычно работает).");
+            Log.d(TAG_FILE_LOG, "API >= Q, WRITE_EXTERNAL_STORAGE не требуется (но знайте, что проверка не помешает, но для Downloads обычно работает).");
             // Для API 29+ прямой доступ к Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-            // обычно работает без явного WRITE_EXTERNAL_STORAGE, если приложение ориентировано на API 28 или ниже,
-            // или если используется requestLegacyExternalStorage="true".
-            // Однако, для надежности, можно оставить проверку, но не блокировать функционал если не дано.
-            // В данном случае, если не дано, запись просто не произойдет.
+            // обычно работает без явного WRITE_EXTERNAL_STORAGE.
         }
     }
 
@@ -472,11 +755,18 @@ public class MainActivity extends AppCompatActivity {
                 Toast.makeText(this, "Разрешение на запись предоставлено.", Toast.LENGTH_SHORT).show();
             } else {
                 Log.w(TAG_FILE_LOG, "В разрешении WRITE_EXTERNAL_STORAGE отказано (MainActivity).");
-                Toast.makeText(this, "Разрешение на запись не предоставлено. Ручные замеры не будут сохраняться в файл.", Toast.LENGTH_LONG).show();
+                Toast.makeText(this, "Разрешение на запись не предоставлено — замеры не будут сохраняться в файл.", Toast.LENGTH_LONG).show();
+            }
+        }
+        if (requestCode == REQUEST_CODE_POST_NOTIFICATIONS) {
+            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                Toast.makeText(this, "Разрешение на уведомления предоставлено.", Toast.LENGTH_SHORT).show();
+                ensureNotificationChannel();
+            } else {
+                Toast.makeText(this, "Без разрешения уведомления показываться не будут.", Toast.LENGTH_LONG).show();
             }
         }
     }
-
 
     @Override
     protected void onDestroy() {

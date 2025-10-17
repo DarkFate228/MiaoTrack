@@ -5,7 +5,7 @@
     android:id="@+id/main"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#FFF0F0"
+    android:background="?attr/colorSurface"
     android:padding="16dp"
     tools:context=".history_measure">
 
@@ -15,12 +15,11 @@
       android:layout_height="wrap_content"
       android:layout_marginTop="16dp"
       android:text="История измерений"
-      android:textColor="#D32F2F"
       android:textSize="24sp"
       android:textStyle="bold"
       app:layout_constraintEnd_toEndOf="parent"
       app:layout_constraintStart_toStartOf="parent"
-      app:layout_constraintTop_toTopOf="parent" />
+      app:layout_constraintTop_toTopOf="parent" android:textColor="?attr/colorPrimary" />
 
   <Spinner
       android:id="@+id/spinner3"
@@ -38,7 +37,7 @@
       android:layout_width="0dp"
       android:layout_height="0dp"
       android:layout_marginTop="16dp"
-      app:cardBackgroundColor="#FFFFFF"
+      app:cardBackgroundColor="?attr/colorSurfaceVariant"
       app:cardCornerRadius="12dp"
       app:cardElevation="4dp"
       app:layout_constraintBottom_toBottomOf="parent"
@@ -59,7 +58,7 @@
           android:padding="16dp"
           android:text="Загрузка истории..."
           android:textAppearance="@style/TextAppearance.AppCompat.Body1"
-          android:textColor="#333333"
+          android:textColor="?attr/colorOnSurface"
           android:textSize="14sp"
           android:lineSpacingExtra="4dp"/>
     </ScrollView>

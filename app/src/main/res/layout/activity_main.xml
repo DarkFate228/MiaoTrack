@@ -1,50 +1,56 @@
 <?xml version="1.0" encoding="utf-8"?>
-<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<androidx.constraintlayout.widget.ConstraintLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
     android:id="@+id/main"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#FFF0F0"
+    android:background="?attr/colorSurface"
     android:padding="16dp"
     tools:context=".MainActivity">
 
+    <!-- Заголовок экрана -->
     <TextView
         android:id="@+id/tvScreenTitle"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
         android:layout_marginTop="16dp"
         android:text="Уровень глюкозы"
-        android:textColor="#D32F2F"
+        android:textColor="?attr/colorPrimary"
         android:textSize="28sp"
         android:textStyle="bold"
-        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintTop_toTopOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toTopOf="parent" />
+        app:layout_constraintEnd_toEndOf="parent" />
 
+    <!-- Подзаголовок -->
     <TextView
         android:id="@+id/tvSubtitle"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
         android:layout_marginTop="4dp"
         android:text="Обзор ваших данных"
-        android:textColor="#757575"
+        android:textColor="?attr/colorOnSurface"
+        android:alpha="0.8"
         android:textSize="16sp"
-        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/tvScreenTitle"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@+id/tvScreenTitle" />
+        app:layout_constraintEnd_toEndOf="parent" />
 
-    <androidx.cardview.widget.CardView
+    <!-- Карточка ручного ввода (MaterialCardView лучше адаптируется под тему) -->
+    <com.google.android.material.card.MaterialCardView
         android:id="@+id/cvManualInput"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
         android:layout_marginTop="24dp"
-        app:cardBackgroundColor="#FFFFFF"
-        app:cardCornerRadius="12dp"
-        app:cardElevation="4dp"
-        app:layout_constraintEnd_toEndOf="parent"
+        app:cardUseCompatPadding="true"
+        app:cardBackgroundColor="?attr/colorSurfaceVariant"
+        app:strokeColor="?attr/colorOutline"
+        app:strokeWidth="1dp"
+        app:layout_constraintTop_toBottomOf="@id/tvSubtitle"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@+id/tvSubtitle">
+        app:layout_constraintEnd_toEndOf="parent">
 
         <LinearLayout
             android:layout_width="match_parent"
@@ -54,12 +60,12 @@
 
             <com.google.android.material.textfield.TextInputLayout
                 android:id="@+id/tilGlucoseInput"
-                style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:hint="Ручной ввод глюкозы (ммоль/л)"
-                app:boxStrokeColor="#D32F2F"
-                app:hintTextColor="#D32F2F">
+                app:boxBackgroundMode="outline"
+                app:boxStrokeColor="?attr/colorPrimary"
+                app:hintTextColor="?attr/colorOnSurface">
 
                 <com.google.android.material.textfield.TextInputEditText
                     android:id="@+id/etGlucoseInput"
@@ -67,54 +73,56 @@
                     android:layout_height="wrap_content"
                     android:inputType="numberDecimal|numberSigned"
                     android:maxLines="1"
-                    android:textColor="#333333" />
+                    android:textColor="?attr/colorOnSurface" />
             </com.google.android.material.textfield.TextInputLayout>
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnSaveManual"
+                style="@style/Widget.Material3.Button"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="16dp"
-                android:backgroundTint="#D32F2F"
-                android:paddingVertical="12dp"
-                android:text="Сохранить ручной ввод"
-                android:textColor="@android:color/white"
-                android:textSize="16sp"
-                app:cornerRadius="8dp" />
-        </LinearLayout>
-    </androidx.cardview.widget.CardView>
+                android:text="Сохранить ручной ввод"/>
+            <!-- фон/текст подтянутся из colorPrimary / colorOnPrimary -->
 
+        </LinearLayout>
+    </com.google.android.material.card.MaterialCardView>
+
+    <!-- Твой Spinner оставлен как есть (если есть кастомный background/drawable) -->
     <Spinner
         android:id="@+id/spinner"
         android:layout_width="0dp"
         android:layout_height="48dp"
         android:layout_marginTop="16dp"
-        android:background="@drawable/spinner_background_main"
         android:paddingStart="12dp"
         android:paddingEnd="12dp"
-        app:layout_constraintEnd_toEndOf="parent"
+        android:background="@drawable/spinner_background_main"
+        app:layout_constraintTop_toBottomOf="@id/cvManualInput"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@+id/cvManualInput" />
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <!-- Заголовок графика -->
     <TextView
         android:id="@+id/tvChartTitle"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginTop="24dp"
         android:text="История измерений"
-        android:textColor="#D32F2F"
+        android:textColor="?attr/colorPrimary"
         android:textSize="20sp"
         android:textStyle="bold"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@+id/spinner" />
+        app:layout_constraintTop_toBottomOf="@id/spinner"
+        app:layout_constraintStart_toStartOf="parent" />
 
+    <!-- Линейный график (цвета линий/осей задаются в коде из темы) -->
     <com.github.mikephil.charting.charts.LineChart
         android:id="@+id/lineChart"
         android:layout_width="0dp"
         android:layout_height="0dp"
         android:layout_marginTop="8dp"
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/tvChartTitle"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@+id/tvChartTitle" />
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintBottom_toBottomOf="parent" />
 
 </androidx.constraintlayout.widget.ConstraintLayout>
